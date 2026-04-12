@@ -97,3 +97,27 @@ jobs:
           updaterJsonPreferNsis: true
           owner: georgemosesgroup
           repo: bookfit-desktop
+
+  # Notify all connected users via SSE after both builds complete
+  notify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get admin token
+        id: auth
+        run: |
+          TOKEN=$(curl -sf https://api.bookfit.mosesdev.com/api/admin/auth/login \
+            -H "Content-Type: application/json" \
+            -H "X-Tenant-Slug: aluradubai" \
+            -d '{"email":"${{ secrets.ADMIN_EMAIL }}","password":"${{ secrets.ADMIN_PASSWORD }}"}' \
+            | jq -r '.data.token')
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Broadcast desktop update via SSE
+        run: |
+          curl -sf https://api.bookfit.mosesdev.com/api/admin/system/desktop-update \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "X-Tenant-Slug: aluradubai" \
+            -d '{"version":"${{ inputs.version }}","notes":"BookFit Desktop v${{ inputs.version }} is available","critical":false}'
+          echo "SSE broadcast sent for v${{ inputs.version }}"
