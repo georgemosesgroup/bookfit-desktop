@@ -63,12 +63,15 @@ jobs:
 
       - name: Set version in tauri.conf.json
         working-directory: Frontend/fitness-saas/apps/desktop/src-tauri
+        shell: bash
         run: |
-          if command -v jq &> /dev/null; then
-            jq '.version = "${{ inputs.version }}"' tauri.conf.json > tmp.json && mv tmp.json tauri.conf.json
-          else
-            sed -i.bak 's/"version": "[^"]*"/"version": "${{ inputs.version }}"/' tauri.conf.json
-          fi
+          node -e "
+            const fs = require('fs');
+            const conf = JSON.parse(fs.readFileSync('tauri.conf.json', 'utf8'));
+            conf.version = '${{ inputs.version }}';
+            fs.writeFileSync('tauri.conf.json', JSON.stringify(conf, null, 2));
+          "
+          echo "Version set to ${{ inputs.version }}"
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
