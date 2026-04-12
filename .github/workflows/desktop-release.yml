@@ -1,10 +1,12 @@
 name: Desktop Release
 
 on:
-  push:
-    tags:
-      - 'desktop-v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.1)'
+        required: true
+        type: string
 
 env:
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -26,7 +28,10 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      # Clone source code from Bitbucket (main repo)
+      - name: Clone source from Bitbucket
+        run: |
+          git clone --depth 1 --branch dev https://${{ secrets.BITBUCKET_USER }}:${{ secrets.BITBUCKET_APP_PASSWORD }}@bitbucket.org/mosesdevelopment/bookfit.git .
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -56,28 +61,32 @@ jobs:
         working-directory: Frontend/fitness-saas
         run: pnpm --filter @fitness/admin build
 
+      - name: Set version in tauri.conf.json
+        working-directory: Frontend/fitness-saas/apps/desktop/src-tauri
+        run: |
+          if command -v jq &> /dev/null; then
+            jq '.version = "${{ inputs.version }}"' tauri.conf.json > tmp.json && mv tmp.json tauri.conf.json
+          else
+            sed -i.bak 's/"version": "[^"]*"/"version": "${{ inputs.version }}"/' tauri.conf.json
+          fi
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing (optional — requires Apple Developer account)
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: Frontend/fitness-saas/apps/desktop
           tauriScript: pnpm tauri
           args: ${{ matrix.args }}
-          tagName: ${{ github.ref_name }}
-          releaseName: 'BookFit Desktop ${{ github.ref_name }}'
+          tagName: desktop-v${{ inputs.version }}
+          releaseName: 'BookFit Desktop v${{ inputs.version }}'
           releaseBody: |
-            BookFit Desktop App release ${{ github.ref_name }}
+            BookFit Desktop App v${{ inputs.version }}
 
             ## Downloads
             - **macOS**: BookFit_universal.dmg (Intel + Apple Silicon)
             - **Windows**: BookFit_x64-setup.exe
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
+          owner: georgemosesgroup
+          repo: bookfit-desktop
