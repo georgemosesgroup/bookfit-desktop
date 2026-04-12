@@ -31,7 +31,7 @@ jobs:
       # Clone source code from Bitbucket (main repo)
       - name: Clone source from Bitbucket
         run: |
-          git clone --depth 1 --branch dev https://${{ secrets.BITBUCKET_USER }}:${{ secrets.BITBUCKET_APP_PASSWORD }}@bitbucket.org/mosesdevelopment/bookfit.git .
+          git clone --depth 1 --branch dev https://x-token-auth:${{ secrets.BITBUCKET_APP_PASSWORD }}@bitbucket.org/mosesdevelopment/bookfit.git .
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
