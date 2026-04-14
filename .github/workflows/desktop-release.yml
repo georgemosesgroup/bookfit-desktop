@@ -116,25 +116,37 @@ jobs:
             -s -k "$KEYCHAIN_PASSWORD" \
             "$KEYCHAIN_PATH"
 
-          # Extract the SHA-1 hash of our identity and use IT (not the CN)
-          # as APPLE_SIGNING_IDENTITY. codesign filters by "codesigning trust
-          # policy" when given an identity by name, which self-signed certs
-          # don't pass without an explicit trust setting. Given a SHA-1 hash
-          # instead, codesign accepts the identity as-is — no trust lookup.
-          CERT_SHA=$(security find-identity "$KEYCHAIN_PATH" \
+          # Tauri-bundler internally validates the signing identity via
+          # `security find-identity -v -p codesigning`, which filters by the
+          # codesigning trust policy. Self-signed certs do not pass that
+          # filter unless we explicitly trust them. Make the cert trusted
+          # system-wide using sudo (available without a password on GitHub
+          # Actions runners) so tauri-bundler + codesign both accept it.
+          CERT_PEM="$RUNNER_TEMP/bookfit-cert.pem"
+          security find-certificate -c "BookFit Self-Signed" -p "$KEYCHAIN_PATH" > "$CERT_PEM"
+          sudo security add-trusted-cert \
+            -d \
+            -r trustRoot \
+            -p codeSign \
+            -k /Library/Keychains/System.keychain \
+            "$CERT_PEM"
+
+          # Also export the SHA-1 hash as APPLE_SIGNING_IDENTITY — more
+          # robust than the CN (no ambiguity if multiple certs share a name).
+          CERT_SHA=$(security find-identity -v -p codesigning \
             | awk -F'"' '/BookFit Self-Signed/{print; exit}' \
             | awk '{print $2}')
           if [[ -z "$CERT_SHA" ]]; then
-            echo "❌ Could not extract SHA-1 of signing cert from keychain"
+            echo "❌ Could not resolve 'BookFit Self-Signed' as a valid codesigning identity"
+            echo "Full identity listing:"
+            security find-identity -v -p codesigning
+            echo "All identities:"
             security find-identity "$KEYCHAIN_PATH"
             exit 1
           fi
           echo "Resolved signing identity SHA-1: $CERT_SHA"
           echo "APPLE_SIGNING_IDENTITY=$CERT_SHA" >> "$GITHUB_ENV"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-
-          # Diagnostic (harmless — for log inspection)
-          security find-identity "$KEYCHAIN_PATH" || true
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.6
