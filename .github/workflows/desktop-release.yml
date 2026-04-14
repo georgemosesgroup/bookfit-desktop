@@ -13,12 +13,12 @@ env:
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-  # macOS code signing (self-signed cert → stable TCC identity across builds).
-  # See scripts/setup-codesign.sh and docs/runbooks/codesign-setup.md.
-  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-  KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+  # NOTE: APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD are intentionally
+  # NOT at job level. Both tauri-action AND tauri-bundler react to their
+  # mere presence (even when empty) by trying to create their own keychain
+  # — which doesn't carry our trust setting and fails. We scope them to
+  # the single import step below, and pass the resolved SHA-1 via
+  # APPLE_SIGNING_IDENTITY through $GITHUB_ENV.
 
 permissions:
   contents: write
@@ -87,12 +87,24 @@ jobs:
       # Import the self-signed code-signing certificate into a temporary
       # keychain on macOS runners only. Gives tauri-action a stable signing
       # identity so TCC persists user permissions across updates.
-      # If secrets are unset (first time this workflow runs before the secrets
-      # are configured) this step becomes a harmless no-op.
+      # Secrets are scoped to THIS step only — neither tauri-action nor
+      # tauri-bundler should see APPLE_CERTIFICATE after this, or they'll
+      # attempt their own (un-trusted) re-import and fail.
       - name: Import macOS code-signing certificate
-        if: matrix.platform == 'macos-latest' && env.APPLE_CERTIFICATE != ''
+        if: matrix.platform == 'macos-latest'
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
+          # Skip early if the secret isn't configured yet — keeps the workflow
+          # usable in a fresh fork before setup-codesign.sh has been run.
+          if [[ -z "$APPLE_CERTIFICATE" ]]; then
+            echo "APPLE_CERTIFICATE not configured — skipping codesigning setup (build will be ad-hoc signed)."
+            exit 0
+          fi
+
           KEYCHAIN_PATH="$RUNNER_TEMP/bookfit-signing.keychain-db"
           CERT_PATH="$RUNNER_TEMP/bookfit-codesign.p12"
 
@@ -152,13 +164,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable tauri-action's built-in cert import — it creates a fresh
-          # keychain WITHOUT the trust setting we added system-wide, so
-          # tauri-bundler's `find-identity -v -p codesigning` returns 0. We
-          # do our own import with explicit trust in the step above, and
-          # pass the SHA-1 via APPLE_SIGNING_IDENTITY (set via GITHUB_ENV).
-          APPLE_CERTIFICATE: ""
-          APPLE_CERTIFICATE_PASSWORD: ""
+          # APPLE_SIGNING_IDENTITY is already in GITHUB_ENV from the import
+          # step (SHA-1 hash). APPLE_CERTIFICATE is NOT set — so neither
+          # tauri-action nor tauri-bundler attempts its own cert import;
+          # both use the pre-configured keychain we set up above.
         with:
           projectPath: Frontend/fitness-saas/apps/desktop
           tauriScript: pnpm tauri
