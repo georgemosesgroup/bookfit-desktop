@@ -9,8 +9,16 @@ on:
         type: string
 
 env:
+  # Tauri updater signing (ed25519 — NOT the same as codesigning)
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+  # macOS code signing (self-signed cert → stable TCC identity across builds).
+  # See scripts/setup-codesign.sh and docs/runbooks/codesign-setup.md.
+  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+  KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
 
 permissions:
   contents: write
@@ -76,6 +84,42 @@ jobs:
           "
           echo "Version set to ${{ inputs.version }}"
 
+      # Import the self-signed code-signing certificate into a temporary
+      # keychain on macOS runners only. Gives tauri-action a stable signing
+      # identity so TCC persists user permissions across updates.
+      # If secrets are unset (first time this workflow runs before the secrets
+      # are configured) this step becomes a harmless no-op.
+      - name: Import macOS code-signing certificate
+        if: matrix.platform == 'macos-latest' && env.APPLE_CERTIFICATE != ''
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/bookfit-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/bookfit-codesign.p12"
+
+          # Decode the .p12 from the base64 secret
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+
+          # Create a fresh keychain, unlock it, add to search list
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Import the cert + allow codesign to use it without prompting
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          # Sanity check + export keychain path so later steps know which one
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.6
         env:
@@ -97,6 +141,13 @@ jobs:
           updaterJsonPreferNsis: true
           owner: georgemosesgroup
           repo: bookfit-desktop
+
+      # Always clean up the temporary keychain, even on build failure.
+      - name: Clean up signing keychain
+        if: always() && matrix.platform == 'macos-latest' && env.KEYCHAIN_PATH != ''
+        shell: bash
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
 
   # Notify all connected users via SSE after both builds complete
   notify:
