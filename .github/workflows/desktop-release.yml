@@ -152,6 +152,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Disable tauri-action's built-in cert import — it creates a fresh
+          # keychain WITHOUT the trust setting we added system-wide, so
+          # tauri-bundler's `find-identity -v -p codesigning` returns 0. We
+          # do our own import with explicit trust in the step above, and
+          # pass the SHA-1 via APPLE_SIGNING_IDENTITY (set via GITHUB_ENV).
+          APPLE_CERTIFICATE: ""
+          APPLE_CERTIFICATE_PASSWORD: ""
         with:
           projectPath: Frontend/fitness-saas/apps/desktop
           tauriScript: pnpm tauri
