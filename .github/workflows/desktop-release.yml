@@ -9,6 +9,8 @@ on:
         type: string
 
 env:
+  ADMIN_API_BASE_URL: https://api.zeevo.app/api
+
   # Tauri updater signing (ed25519 — NOT the same as codesigning)
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -200,19 +202,78 @@ jobs:
     steps:
       - name: Get admin token
         id: auth
+        shell: bash
         run: |
-          TOKEN=$(curl -sf https://api.bookfit.mosesdev.com/api/admin/auth/login \
+          set +e
+
+          response_file="$RUNNER_TEMP/admin-login-response.json"
+          http_code=$(curl --silent --show-error --location \
+            --max-time 15 \
+            --retry 2 \
+            --retry-delay 2 \
+            --retry-connrefused \
+            --output "$response_file" \
+            --write-out "%{http_code}" \
+            "$ADMIN_API_BASE_URL/admin/auth/login" \
             -H "Content-Type: application/json" \
             -H "X-Tenant-Slug: aluradubai" \
-            -d '{"email":"${{ secrets.ADMIN_EMAIL }}","password":"${{ secrets.ADMIN_PASSWORD }}"}' \
-            | jq -r '.data.token')
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+            -d '{"email":"${{ secrets.ADMIN_EMAIL }}","password":"${{ secrets.ADMIN_PASSWORD }}"}')
+          curl_exit=$?
+
+          if [[ "$curl_exit" -ne 0 ]]; then
+            echo "::warning::Desktop update notify skipped: admin login request failed with curl exit ${curl_exit}."
+            echo "token=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+            echo "::warning::Desktop update notify skipped: admin login returned HTTP ${http_code}."
+            echo "token=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          token=$(jq -r '.data.token // empty' "$response_file")
+          if [[ -z "$token" ]]; then
+            echo "::warning::Desktop update notify skipped: admin login response did not include a token."
+          fi
+
+          echo "token=$token" >> "$GITHUB_OUTPUT"
 
       - name: Broadcast desktop update via SSE
+        shell: bash
         run: |
-          curl -sf https://api.bookfit.mosesdev.com/api/admin/system/desktop-update \
+          set +e
+
+          token="${{ steps.auth.outputs.token }}"
+          if [[ -z "$token" ]]; then
+            echo "::warning::Desktop update notify skipped: no admin token was available."
+            exit 0
+          fi
+
+          response_file="$RUNNER_TEMP/desktop-update-response.json"
+          http_code=$(curl --silent --show-error --location \
+            --max-time 15 \
+            --retry 2 \
+            --retry-delay 2 \
+            --retry-connrefused \
+            --output "$response_file" \
+            --write-out "%{http_code}" \
+            "$ADMIN_API_BASE_URL/admin/system/desktop-update" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "Authorization: Bearer $token" \
             -H "X-Tenant-Slug: aluradubai" \
             -d '{"version":"${{ inputs.version }}","notes":"BookFit Desktop v${{ inputs.version }} is available","critical":false}'
+          )
+          curl_exit=$?
+
+          if [[ "$curl_exit" -ne 0 ]]; then
+            echo "::warning::Desktop update broadcast failed with curl exit ${curl_exit}; release artifacts are already published."
+            exit 0
+          fi
+
+          if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+            echo "::warning::Desktop update broadcast returned HTTP ${http_code}; release artifacts are already published."
+            exit 0
+          fi
+
           echo "SSE broadcast sent for v${{ inputs.version }}"
